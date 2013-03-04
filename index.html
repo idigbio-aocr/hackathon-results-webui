@@ -1,0 +1,250 @@
+<html>
+<head>
+<script src="http://cdnjs.cloudflare.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+<script src="http://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.4.4/underscore-min.js"></script>
+<link href="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/css/bootstrap-combined.min.css" rel="stylesheet">
+<script src="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/js/bootstrap.min.js"></script>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row-fluid">
+            <div id="main-content" class="span10">
+                <canvas id="my-canvas" width="1580" height="1125">
+                I am canvas.
+                </canvas>
+            </div>
+            <div class="span2" id="right">
+            </div>
+        </div>
+    </div>
+</body>
+<script>
+
+if (XMLHttpRequest.prototype.sendAsBinary === undefined) {
+  XMLHttpRequest.prototype.sendAsBinary = function(string) {
+    var bytes = Array.prototype.map.call(string, function(c) {
+      return c.charCodeAt(0) & 0xff;
+    });
+    this.send(new Uint8Array(bytes).buffer);
+  };
+}
+
+function postCanvasToURL(url, name, fn, canvas, type) {
+  var data = canvas.toDataURL(type);
+  data = data.replace('data:' + type + ';base64,', '');
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', url, true);
+  var boundary = 'ohaiimaboundary';
+  xhr.setRequestHeader(
+    'Content-Type', 'multipart/form-data; boundary=' + boundary);
+  xhr.sendAsBinary([
+    '--' + boundary,
+    'Content-Disposition: form-data; name="' + name + '"; filename="' + fn + '"',
+    'Content-Type: ' + type,
+    '',
+    atob(data),
+    '--' + boundary + '--'
+  ].join('\r\n'));
+  return xhr;
+}
+
+var xtol = 20;
+var ytol = 20;
+var rectangle_list = [];
+
+function rec_from_box(box) {
+    return { min_x: box.x,
+             max_x: box.x + box.width,
+             min_y: box.y,
+             max_y: box.y + box.height,
+             tol_min_x: box.x - xtol,
+             tol_max_x: box.x + box.width + xtol,
+             tol_min_y: box.y - ytol,
+             tol_max_y: box.y + box.height + ytol,
+             consolidated: false
+           }
+}
+
+function point_in_rectangle(x,y,rect) {
+  if (x >= rect.tol_min_x && x <= rect.tol_max_x) {
+    if (y >= rect.tol_min_y && y <= rect.tol_max_y) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function rectangles_overlap(a,b) {
+  return point_in_rectangle(a.tol_min_x,a.tol_min_y,b) ||
+  point_in_rectangle(a.tol_min_x,a.tol_max_y,b) || 
+  point_in_rectangle(a.tol_max_x,a.tol_min_y,b) ||
+  point_in_rectangle(a.tol_max_x,a.tol_max_y,b)
+}
+
+function consolidate_rectangles(inner_rectangle,outer_rectangle) {
+    var r = { min_x: Math.min(outer_rectangle.min_x,inner_rectangle.min_x),
+             max_x: Math.max(outer_rectangle.max_x,inner_rectangle.max_x),
+             min_y: Math.min(outer_rectangle.min_y,inner_rectangle.min_y),
+             max_y: Math.max(outer_rectangle.max_y,inner_rectangle.max_y),             
+             consolidated: true
+        };
+    r = _.extend(r,{
+             tol_min_x: r.min_x - xtol,
+             tol_max_x: r.max_x + xtol,
+             tol_min_y: r.min_y - ytol,
+             tol_max_y: r.max_y + ytol
+           });
+    return r;
+}
+
+function combine_rectangles() {
+    for (var i = 0; i < rectangle_list.length-1; i++) {
+        outer_rectangle = rectangle_list[i]
+        for (var j = i+1; j < rectangle_list.length; j++) {    
+            inner_rectangle = rectangle_list[j];
+            if (rectangles_overlap(outer_rectangle,inner_rectangle) || rectangles_overlap(inner_rectangle,outer_rectangle)) {
+                consolidated = consolidate_rectangles(inner_rectangle,outer_rectangle)
+                rectangle_list[i] = null;
+                rectangle_list[j] = null;
+                rectangle_list.push(consolidated);
+                rectangle_list = _.compact(rectangle_list);
+                return true;
+            }
+        }
+    }
+    return false
+}
+
+var righttemplate = _.template("<div id='<%= name %>'><canvas id='<%= name %>_ctx' width='<%= width %>' height='<%= height %>'></canvas><br><span id='<%= name %>_text'></span></div>");
+
+function do_box_canvas(img,box){
+    var rname = [box.x,box.y,box.width,box.height].join("_");
+    ($("#right").append(righttemplate({
+        name: rname,
+        width: box.width,
+        height: box.height
+    })));
+    var rcnv = document.getElementById(rname + "_ctx");
+    var rctx = rcnv.getContext("2d");
+    rctx.drawImage(img,box.x,box.y,box.width,box.height,0,0,box.width,box.height);
+    var xhr = postCanvasToURL('/tess/'+rname,"file","canvas.jpg",rcnv,'image/jpeg');
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4) {
+            $("#" + rname + "_text").text(xhr.responseText);
+        }
+    }
+}
+
+jQuery(document).ready(function () {
+        var canvas = document.getElementById("my-canvas"),
+                context = canvas.getContext("2d"),
+                img = document.createElement("img"),
+                mouseDown = false,
+                brushColor = "rgb(0, 0, 0)",
+                hasText = true,
+                clearCanvas = function () {
+                        if (hasText) {
+                                context.clearRect(0, 0, canvas.width, canvas.height);
+                                hasText = false;
+                        }
+                };
+                
+        // Adding instructions
+        context.fillText("Drop an image onto the canvas", 240, 200);
+//         context.fillText("Click a spot to set as brush color", 240, 220);
+        
+        // Image for loading    
+        img.addEventListener("load", function () {
+                clearCanvas();
+                context.drawImage(img, 0, 0);
+                var xhr = postCanvasToURL('/swt',"source","canvas.jpg",canvas,'image/jpeg');
+                xhr.onreadystatechange = function() {
+                    if (xhr.readyState == 4) {
+                        var boxes = JSON.parse(xhr.responseText);        
+                        _.each(boxes,function(box){
+                            rectangle_list.push(rec_from_box(box));
+                            do_box_canvas(img,box);
+                        });
+                        while (combine_rectangles()){                               
+                        }                        
+                        _.each(rectangle_list,function(rect){
+                            var box = {
+                                x: rect.min_x,
+                                y: rect.min_y,
+                                width: rect.max_x - rect.min_x,
+                                height: rect.max_y - rect.min_y
+                            }
+                            do_box_canvas(img,box);
+                        });
+                        context.strokeStyle = '#f00';
+                        _.each(boxes,function(box){
+                            context.strokeRect(box.x,box.y,box.width,box.height);
+                        });
+                        context.strokeStyle = '#00f';
+                        _.each(rectangle_list,function(rect){
+                            var box = {
+                                x: rect.min_x,
+                                y: rect.min_y,
+                                width: rect.max_x - rect.min_x,
+                                height: rect.max_y - rect.min_y
+                            }
+                            context.strokeRect(box.x,box.y,box.width,box.height);
+                        });
+                    }
+                }
+                var xhr2 = postCanvasToURL('/tess-hocr/canvas.jpg',"file","canvas.jpg",canvas,'image/jpeg');
+                xhr2.onreadystatechange = function() {
+                    if (xhr2.readyState == 4) {
+                        console.log(xhr2.responseText);
+                    }
+                }                    
+        }, false);        
+
+        // To enable drag and drop
+        canvas.addEventListener("dragover", function (evt) {
+                evt.preventDefault();
+        }, false);
+
+        // Handle dropped image file - only Firefox and Google Chrome
+        canvas.addEventListener("drop", function (evt) {
+                var files = evt.dataTransfer.files;
+                if (files.length > 0) {
+                        var file = files[0];
+                        if (typeof FileReader !== "undefined" && file.type.indexOf("image") != -1) {
+                                var reader = new FileReader();
+                                // Note: addEventListener doesn't work in Google Chrome for this event
+                                reader.onload = function (evt) {
+                                        img.src = evt.target.result;
+                                };
+                                reader.readAsDataURL(file);
+                        }
+                }
+                evt.preventDefault();
+        }, false);        
+})
+
+// var img = new Image();
+// img.onload = function() {
+//     var ctx = document.getElementById('ctx').getContext('2d');
+//     ctx.drawImage(img, 0, 0, 1580, 1125);
+//     ctx.strokeStyle = '#f00';
+//     _.each(boxes,function(box){
+//         console.log(box);
+//         ctx.strokeRect(box.x,box.y,box.width,box.height);
+//     });    
+// }
+// img.src = 'file:///home/godfoder/datasets/lichens/images/NY01075840_lg.jpg';
+
+//   var ctx = document.getElementById('ctx').getContext('2d');
+//   ctx.strokeStyle = '#f00';
+//   ctx.lineWidth   = 1;
+// //   ctx.lineJoin    = 'round';
+//   ctx.strokeRect(140,60,40,40);
+//   _.each(boxes,function(box){
+//     console.log(box);
+//     ctx.strokeRect(box.x,box.y,box.width,box.height);
+//   });
+
+</script>
+</html>
