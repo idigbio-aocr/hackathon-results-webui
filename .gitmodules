@@ -1,0 +1,6 @@
+[submodule "hack-wrapper"]
+	path = hack-wrapper
+	url = git@github.com:idigbio-aocr/hack-wrapper.git
+[submodule "ccv"]
+	path = ccv
+	url = git://github.com/liuliu/ccv.git
